@@ -15,6 +15,7 @@ from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, T
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
+import time
 
 from app.config import DATABASE_URL, TELEGRAM_TOKEN, CHAT_ID
 
