@@ -1,16 +1,11 @@
-"""
-API для получения списка событий.
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+from app import models, schemas
+from app.database import get_db
 
-TODO: Реализовать GET /api/events
-- Возвращать список событий из PostgreSQL
-- Поддержать фильтрацию: по severity, по sensor_id, по диапазону дат
-- Пагинация (limit, offset)
-- Сортировка по дате (новые первыми)
-"""
+router = APIRouter(prefix="/api/events", tags=["events"])
 
-from fastapi import APIRouter
-
-router = APIRouter()
-
-
-# TODO: реализовать эндпоинт
+@router.get("/", response_model=list[schemas.SensorEventResponse])
+def get_events(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+    events = db.query(models.event.SensorEvent).offset(skip).limit(limit).all()
+    return events

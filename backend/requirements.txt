@@ -7,3 +7,8 @@ alembic==1.14.1
 celery==5.4.0
 redis==5.2.1
 httpx==0.28.1
+requests==2.32.0
+psycopg2-binary==2.9.10
+tenacity
+pytest
+pytest-mock

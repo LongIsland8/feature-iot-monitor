@@ -1,20 +1,31 @@
-"""
-Mock Telegram Bot API.
+# mock-telegram/app.py
 
-TODO: Реализовать фейковый Telegram Bot API
-- POST /bot{token}/sendMessage — принимает chat_id и text, сохраняет в память
-- GET /bot{token}/messages — возвращает список отправленных сообщений (для отладки)
-- 10% запросов sendMessage должны возвращать 500 (имитация сбоя)
+from fastapi import FastAPI, HTTPException
+import random
+from typing import List, Dict
 
-Подсказка: используй FastAPI, случайные ошибки через random.random()
-"""
+app = FastAPI()
 
-from fastapi import FastAPI
+# Храним сообщения в памяти
+messages: List[Dict[str, str]] = []
 
-app = FastAPI(title="Mock Telegram Bot API")
+@app.post("/bot{token}/sendMessage")
+async def send_message(token: str, chat_id: int, text: str):
+    if random.random() < 0.1:  # 10% шанс ошибки
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+    messages.append({"chat_id": chat_id, "text": text})
+    return {"ok": True, "result": {"message_id": len(messages)}}
 
+@app.get("/bot{token}/messages")
+async def get_messages(token: str):
+    return {"messages": messages}
 
-# TODO: реализовать эндпоинты
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
+@app.get("/")
+def home():
+    return {
+        "message": "Mock Telegram Bot API is running",
+        "endpoints": [
+            "POST /bot{token}/sendMessage",
+            "GET /bot{token}/messages"
+        ]
+    }

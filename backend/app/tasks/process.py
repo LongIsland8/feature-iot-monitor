@@ -1,113 +1,135 @@
-"""
-Celery-задача обработки событий от датчиков.
+# backend/app/tasks/process.py
 
-TODO: Реализовать задачу process_sensor_event
-- Определить severity по правилам из rules.json
-- Если critical — отправить уведомление в Telegram (mock API)
-- Сохранить событие в PostgreSQL
-- При ошибке Telegram — retry до 3 раз с экспоненциальной задержкой
-"""
-
-import json
-import requests
 from celery import shared_task
-from sqlalchemy import create_engine, Column, Integer, String, Float, Boolean, Text, DateTime
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
-from datetime import datetime
-import time
+from celery.exceptions import Retry
+from app.database import SessionLocal
+from app.models.event import SensorEvent
+import json
+import os
+from typing import List, Dict, Any
 
-from app.config import DATABASE_URL, TELEGRAM_TOKEN, CHAT_ID
 
-# === Настройка SQLAlchemy (вне FastAPI) ===
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-# === Загрузка правил из rules.json ===
-def load_rules():
-    with open("rules.json") as f:
-        return json.load(f)
-
-rules = load_rules()
-TEMPERATURE_CRITICAL = rules.get("temperature_critical", 50)
-HUMIDITY_CRITICAL = rules.get("humidity_critical", 95)
-TEMPERATURE_WARNING = rules.get("temperature_warning", 35)
-HUMIDITY_WARNING = rules.get("humidity_warning", 80)
-
-# === URL для Telegram mock ===
-TELEGRAM_URL = f"http://mock-telegram:8001/bot{TELEGRAM_TOKEN}/sendMessage"
-
-# === Основная Celery-задача ===
-@shared_task(bind=True)
-def process_sensor_event(self, data):
+def classify_severity(temperature: float, humidity: float, rules: List[Dict[str, Any]]) -> str:
     """
-    Обрабатывает событие с датчика:
-    - Определяет severity
-    - Сохраняет в БД
-    - Отправляет уведомление при critical (с retry)
+    Classify event severity based on JSON rules.
+
+    Expected rule format in rules.json:
+    {
+        "id": "...",
+        "name": "high",                # human‑readable name
+        "description": "...",
+        "condition": {
+            "field": "temperature",    # "temperature" | "humidity"
+            "operator": ">",           # one of >, >=, <, <=, ==
+            "value": 30
+        },
+        "severity": "high",            # severity value to return
+        "notification": true
+    }
     """
+    metrics = {
+        "temperature": temperature,
+        "humidity": humidity,
+    }
+
+    result = "normal"
+
+    for rule in rules:
+        condition = rule.get("condition") or {}
+        field = condition.get("field")
+        operator = condition.get("operator")
+        value = condition.get("value")
+
+        if field not in metrics or operator is None or value is None:
+            continue
+
+        current = metrics[field]
+        matched = False
+
+        if operator == ">":
+            matched = current > value
+        elif operator == ">=":
+            matched = current >= value
+        elif operator == "<":
+            matched = current < value
+        elif operator == "<=":
+            matched = current <= value
+        elif operator == "==":
+            matched = current == value
+
+        if matched:
+            # Prefer explicit severity, fall back to name
+            result = rule.get("severity") or rule.get("name") or result
+            break
+
+    return result
+
+
+@shared_task
+def process_sensor_event(event_data: dict):
+    """
+    Обрабатывает событие датчика:
+    - классифицирует severity
+    - сохраняет в БД
+    - отправляет уведомление при high/critical
+    """
+    from app.tasks.telegram import send_telegram_notification
+
     db = SessionLocal()
     try:
-        temp = data["temperature"]
-        hum = data["humidity"]
+        # Загружаем правила
+        rules_path = "/app/rules.json"
+        with open(rules_path) as f:
+            rules_data = json.load(f)
+            rules = rules_data["rules"]
 
-        # Определение уровня серьёзности
-        if temp > TEMPERATURE_CRITICAL or hum > HUMIDITY_CRITICAL:
-            severity = "critical"
-        elif temp > TEMPERATURE_WARNING or hum > HUMIDITY_WARNING:
-            severity = "warning"
-        else:
-            severity = "normal"
-
-        # Импортируем модель здесь, чтобы избежать циклических импортов
-        from app.models.event import SensorEvent
-
-        # Создаём объект события
-        event = SensorEvent(
-            sensor_id=data["sensor_id"],
-            location=data["location"],
-            temperature=temp,
-            humidity=hum,
-            severity=severity,
-            notification_sent=False,
-            error_message=None,
-            created_at=datetime.fromisoformat(data["timestamp"].replace("Z", "+00:00")),
+        # Классификация
+        severity = classify_severity(
+            event_data["temperature"],
+            event_data["humidity"],
+            rules,
         )
-        db.add(event)
+
+        # Сохраняем событие (только поддерживаемые полями модели атрибуты)
+        db_event = SensorEvent(
+            sensor_id=event_data["sensor_id"],
+            location=event_data["location"],
+            temperature=event_data["temperature"],
+            humidity=event_data["humidity"],
+            severity=severity,
+        )
+        db.add(db_event)
         db.commit()
-        db.refresh(event)
+        db.refresh(db_event)
 
-        # Если критическая ситуация — отправляем в Telegram
-        if severity == "critical":
-            message = f"🚨 CRITICAL: {data['sensor_id']} ({data['location']}) — {temp}°C"
+        # Базовые флаги результата
+        notification_sent = False
+        error_message = None
 
-            # Попытки отправки с экспоненциальной задержкой
-            for attempt in range(3):
-                try:
-                    response = requests.post(TELEGRAM_URL, json={"chat_id": CHAT_ID, "text": message}, timeout=5)
-                    if response.status_code == 200:
-                        event.notification_sent = True
-                        db.commit()
-                        break
-                    else:
-                        raise Exception(f"Telegram error: {response.status_code}")
-                except Exception as e:
-                    if attempt == 2:  # Последняя попытка
-                        event.error_message = str(e)
-                        db.commit()
-                        raise
-                    # Ждём перед повтором: 1, 2, 4 секунды
-                    time.sleep(2 ** attempt)
-            # Конец retry-логики
+        # Отправляем уведомление только для серьёзных событий
+        if severity in ["high", "critical"]:
+            try:
+                send_telegram_notification.delay(
+                    chat_id=12345,
+                    text=(
+                        f"🚨 Alert: {severity.upper()} severity event from {event_data['sensor_id']}\n"
+                        f"Location: {event_data['location']}\n"
+                        f"Temp: {event_data['temperature']}°C\n"
+                        f"Humidity: {event_data['humidity']}%"
+                    ),
+                )
+                notification_sent = True
+            except Exception as e:
+                # При ошибке отправки уведомления повторяем задачу
+                error_message = str(e)
+                raise process_sensor_event.retry(exc=e, countdown=5)
 
-        return {"status": "processed", "event_id": event.id, "severity": severity}
+        return {
+            "id": db_event.id,
+            "severity": severity,
+            "notification_sent": notification_sent,
+            "error_message": error_message,
+        }
 
-    except Exception as exc:
-        db.rollback()
-        # Пробрасываем исключение, чтобы Celery мог сделать retry
-        raise self.retry(exc=exc, countdown=2 ** self.request.retries) from exc
     finally:
         db.close()
-
-
-# TODO: реализовать задачу

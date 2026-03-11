@@ -1,20 +1,9 @@
-from pydantic_settings import BaseSettings
+# backend/app/config.py
 
+import os
 
-class Settings(BaseSettings):
-    # Database
-    database_url: str = "postgresql+asyncpg://postgres:postgres@db:5432/iot_monitor"
-
-    # Redis
-    redis_url: str = "redis://redis:6379/0"
-
-    # Telegram Bot (mock)
-    telegram_bot_token: str = "fake-bot-token"
-    telegram_chat_id: str = "123456"
-    telegram_api_url: str = "http://mock-telegram:8001"
-
-    class Config:
-        env_file = ".env"
-
-
-settings = Settings()
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@db:5432/iot_monitor")
+REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
+TELEGRAM_API_URL = os.getenv("TELEGRAM_API_URL", "http://mock-telegram:8001")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "test-token")
+CHAT_ID = os.getenv("CHAT_ID", "123456")

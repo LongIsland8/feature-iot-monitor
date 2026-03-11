@@ -1,3 +1,5 @@
+version: '3.8'
+
 services:
   db:
     image: postgres:16-alpine
@@ -6,71 +8,92 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: iot_monitor
     ports:
-      - "5432:5432"
+      - "5432:5432" # чтобы можно было подключиться с localhost (например, DBeaver)
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql/data # сохраняем данные БД между перезапусками
+      - ./pg_hba.conf:/var/lib/postgresql/data/pg_hba.conf # кастомные правила доступа к БД
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ] # ждём, пока БД станет готова
       interval: 5s
       timeout: 3s
       retries: 5
+    networks:
+      - iot-network
 
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "6379:6379" # для отладки (можно посмотреть через redis-cli)
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: [ "CMD", "redis-cli", "ping" ] # проверяем, жив ли Redis
       interval: 5s
       timeout: 3s
       retries: 5
+    networks:
+      - iot-network
 
   app:
     build: ./backend
     ports:
-      - "8000:8000"
+      - "8000:8000" # API доступен по http://localhost:8000
     volumes:
-      - ./backend:/app
-      - ./rules.json:/app/rules.json:ro
+      - ./backend:/app # hot reload кода бэкенда
+      - ./rules.json:/app/rules.json:ro # правила (только чтение)
     environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/iot_monitor
-      REDIS_URL: redis://redis:6379/0
-      TELEGRAM_API_URL: http://mock-telegram:8001
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/iot_monitor # URL для подключения к БД
+      - REDIS_URL=redis://redis:6379/0 # Celery будет использовать это
+      - TELEGRAM_API_URL=http://mock-telegram:8000 # мок вместо настоящего Telegram
     depends_on:
       db:
-        condition: service_healthy
+        condition: service_healthy # не стартуем, пока БД не готова
       redis:
-        condition: service_healthy
+        condition: service_healthy # и Redis тоже
+    networks:
+      - iot-network
 
   celery:
     build: ./backend
-    command: celery -A app.tasks worker --loglevel=info
+    command: celery -A app.celery_app.celery_app worker --loglevel=info # запускаем воркер
     volumes:
-      - ./backend:/app
-      - ./rules.json:/app/rules.json:ro
+      - ./backend:/app # чтобы видел изменения в коде
+      - ./rules.json:/app/rules.json:ro # те же правила
     environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/iot_monitor
-      REDIS_URL: redis://redis:6379/0
-      TELEGRAM_API_URL: http://mock-telegram:8001
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/iot_monitor
+      - REDIS_URL=redis://redis:6379/0
+      - TELEGRAM_API_URL=http://mock-telegram:8000
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
+    networks:
+      - iot-network
 
   mock-telegram:
     build: ./mock-telegram
     ports:
-      - "8001:8001"
+      - "8001:8000" # доступен снаружи по http://localhost:8001
+    environment:
+      - ENV=dev # можно добавить логи или поведение под окружение
+    networks:
+      - iot-network # чтобы app и celery могли до него достучаться
 
   frontend:
     build: ./frontend
     ports:
-      - "3000:3000"
+      - "3000:3000" # дашборд на http://localhost:3000
     volumes:
-      - ./frontend/src:/app/src
+      - ./frontend/src:/app/src # горячая перезагрузка компонентов
     depends_on:
-      - app
+      - app # ждём, пока бэкенд поднимется
+    networks:
+      - iot-network
 
+# Все сервисы в одной сети — могут общаться по имени (db, redis, app и т.д.)
+networks:
+  iot-network:
+    driver: bridge
+
+# Именованный volume для хранения данных PostgreSQL
 volumes:
   pgdata:

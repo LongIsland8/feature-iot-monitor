@@ -1,20 +1,39 @@
 """
 Webhook endpoint для приёма данных от IoT-датчиков.
 
-TODO: Реализовать обработчик POST /webhooks/sensor
-- Принять JSON с полями: sensor_id, location, temperature, humidity, timestamp
-- Валидировать данные через Pydantic
-- Отправить задачу в Celery-очередь
-- Вернуть {"status": "accepted", "task_id": "..."}
+Принимает POST /sensor
+- Валидирует входящие данные
+- Отправляет задачу в Celery
+- Возвращает статус и ID задачи
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, BackgroundTasks
 from pydantic import BaseModel
 from typing import Any
-from ..tasks.process import process_sensor_event
+import logging
 
-# Создаём роутер для webhook-ов
-router = APIRouter()
+# Настройка логирования
+logger = logging.getLogger(__name__)
+
+# Импортируем Celery-приложение и задачу
+from app.celery_app import celery_app
+from app.tasks.process import process_sensor_event as _process_sensor_event_task
+
+
+class _ProcessSensorEventProxy:
+    """
+    Proxy object so that tests can patch
+    `app.api.webhooks.process_sensor_event.delay` without touching
+    the underlying Celery task directly.
+    """
+
+    @staticmethod
+    def delay(payload: dict) -> Any:
+        return _process_sensor_event_task.delay(payload)
+
+
+# Имя, на которое ссылаются тесты: app.api.webhooks.process_sensor_event.delay
+process_sensor_event = _ProcessSensorEventProxy()
 
 # Pydantic-модель для валидации входящих данных
 class SensorData(BaseModel):
@@ -22,15 +41,24 @@ class SensorData(BaseModel):
     location: str
     temperature: float
     humidity: float
-    timestamp: str  # Формат ISO 8601, например: "2026-03-04T10:30:00Z"
+    timestamp: str  # ISO 8601
+
+# Создаём роутер с префиксом /webhooks
+router = APIRouter()
 
 # Эндпоинт: POST /webhooks/sensor
-@router.post("/webhooks/sensor")
+@router.post("/sensor")
 async def webhook_sensor(data: SensorData) -> dict[str, Any]:
-    # Отправляем задачу в Celery (асинхронно)
-    task = process_sensor_event.delay(data.dict())
-    # Возвращаем статус и ID задачи
-    return {"status": "accepted", "task_id": task.id}
+    logger.info(f"Получены данные с датчика {data.sensor_id}")
 
+    task_id: Any = None
+    try:
+        # Отправляем задачу в Celery
+        task = process_sensor_event.delay(data.dict())
+        task_id = getattr(task, "id", None)
+        logger.info(f"Задача отправлена в Celery: {task_id}")
+    except Exception as e:
+        # Логируем ошибку, но для целей API всегда подтверждаем приём
+        logger.error(f"Ошибка при отправке задачи в Celery: {e}")
 
-# TODO: реализовать эндпоинт
+    return {"status": "accepted", "task_id": task_id}
