@@ -1,0 +1,40 @@
+{
+  "rules": [
+    {
+      "id": "high_temperature",
+      "name": "high",
+      "description": "High temperature detected",
+      "condition": {
+        "field": "temperature",
+        "operator": ">",
+        "value": 40
+      },
+      "severity": "high",
+      "notification": true
+    },
+    {
+      "id": "warning_temperature",
+      "name": "warning",
+      "description": "Warning temperature level",
+      "condition": {
+        "field": "temperature",
+        "operator": ">",
+        "value": 35
+      },
+      "severity": "warning",
+      "notification": false
+    },
+    {
+      "id": "low_humidity",
+      "name": "low_humidity",
+      "description": "Low humidity detected",
+      "condition": {
+        "field": "humidity",
+        "operator": "<",
+        "value": 0
+      },
+      "severity": "medium",
+      "notification": true
+    }
+  ]
+}
